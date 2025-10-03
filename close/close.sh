@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-# close (close-all-apps.sh)
-# Quit/kill visible GUI apps on macOS.
-# Short/Long options:
-#   -n, --dry-run     : show which GUI apps would be quit/killed (no action)
-#   -f, --force       : ask apps to quit then force-kill remaining
-#   -F, --immediate   : immediately SIGKILL matching apps (no graceful quit)
-#   -b, --no-browser  : exclude common web browsers
-#   -h, --help        : show help
-#
-# Examples:
-#   close -n            # dry-run
-#   close -fb           # force remaining and don't close browsers (chained)
-#   close -F            # immediate SIGKILL of matched apps 
-#   close -nb           # dry-run & don't close browsers
+# close-all-apps.sh
+# Quit/kill visible GUI apps on macOS, with options for force, immediate kill, browser exclusion, and dry-run.
+# Supports short and long flags, including chained short flags (-fb, -nF, etc.)
 
 set -euo pipefail
 
@@ -28,57 +17,39 @@ show_help() {
 Usage: $SCRIPT_NAME [options]
 
 Options:
-  -n, --dry-run       Show which GUI apps would be quit/killed, do not perform actions.
-  -f, --force         Ask apps to quit, then force-kill any that remain.
-  -F, --immediate     Immediately SIGKILL matching apps (no graceful quit). WARNING: data loss possible.
-  -b, --no-browser    Exclude common web browsers (Safari, Chrome, Firefox, etc.).
-  -h, --help          Show this help message and exit.
+  -n, --dry-run       Show which GUI apps would be targeted; do not quit/kill.
+  -f, --force         Ask apps to quit politely, then force-kill any that remain.
+  -F, --immediate     Immediately SIGKILL targeted apps (skips graceful quit) except Finder, which is quit normally.
+  -b, --no-browser    Exclude common web browsers from being closed.
+  -h, --help          Show this help text and exit.
 
 Short flags can be chained, e.g.:
   $SCRIPT_NAME -fb   (same as -f -b)
   $SCRIPT_NAME -nF   (same as -n -F)
-
-Notes:
-  - The script excludes common terminal emulators by default so the shell running
-    this command remains usable (Terminal, iTerm2, Alacritty, kitty, etc.).
-  - Quitting Finder is included; macOS may relaunch Finder automatically.
-  - Use --dry-run to preview which apps would be affected.
-
 EOF
 }
 
-# ---- Preprocess args to support grouped short options (e.g. -fb) ----
+# ---- Preprocess args to support grouped short options ----
 RAW_ARGS=("$@")
 PARSED_ARGS=()
 for arg in "${RAW_ARGS[@]}"; do
-  # preserve standalone "--"
   if [ "$arg" = "--" ]; then
     PARSED_ARGS+=("$arg")
     continue
   fi
-
-  # long options remain intact
   if [[ "$arg" == --* ]]; then
     PARSED_ARGS+=("$arg")
     continue
   fi
-
-  # single dash with multiple letters -> split (e.g. -fb -> -f -b)
   if [[ "$arg" == -[!-]* && ${#arg} -gt 2 ]]; then
     letters="${arg#-}"
-    i=0
-    while [ $i -lt ${#letters} ]; do
+    for ((i=0;i<${#letters};i++)); do
       PARSED_ARGS+=("-${letters:$i:1}")
-      i=$((i + 1))
     done
     continue
   fi
-
-  # otherwise keep as-is
   PARSED_ARGS+=("$arg")
 done
-
-# Replace positional params with expanded ones
 set -- "${PARSED_ARGS[@]:-}"
 
 # ---- Parse options ----
@@ -89,7 +60,7 @@ while [ "$#" -gt 0 ]; do
     -f|--force)
       FORCE=1; shift ;;
     -F|--immediate)
-      IMMEDIATE=1; FORCE=1; shift ;; # immediate implies force behavior
+      IMMEDIATE=1; FORCE=1; shift ;;
     -b|--no-browser)
       NO_BROWSER=1; shift ;;
     -h|--help)
@@ -98,42 +69,33 @@ while [ "$#" -gt 0 ]; do
       shift; break ;;
     -*)
       echo "Unknown option: $1" >&2
-      show_help
-      exit 2 ;;
+      show_help; exit 2 ;;
     *)
-      # positional args (none expected) — break for future extension
       break ;;
   esac
 done
 
 # Ensure macOS
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "This script is for macOS (Darwin) only." >&2
+  echo "This script is for macOS only." >&2
   exit 1
 fi
 
-# Base excluded apps (so the terminal running this remains usable)
+# Base excluded apps (so your terminal stays alive)
 EXCLUDE_PROGS=("Terminal" "iTerm2" "iTerm" "Hyper" "Alacritty" "kitty" "WezTerm" "tmux" "Screen" "ssh")
 
 # Add browser exclusions if requested
 if [ "$NO_BROWSER" -eq 1 ]; then
   BROWSERS_TO_EXCLUDE=(
-    "Safari"
-    "Safari Technology Preview"
-    "Google Chrome"
-    "Google Chrome Canary"
-    "Firefox"
-    "Brave Browser"
-    "Microsoft Edge"
-    "Chromium"
-    "Opera"
-    "Vivaldi"
-    "Tor Browser"
+    "Safari" "Safari Technology Preview"
+    "Google Chrome" "Google Chrome Canary"
+    "Firefox" "Brave Browser"
+    "Microsoft Edge" "Chromium" "Opera" "Vivaldi" "Tor Browser"
   )
   EXCLUDE_PROGS+=("${BROWSERS_TO_EXCLUDE[@]}")
 fi
 
-# Get list of running GUI app names (non-background processes)
+# Get list of running GUI apps
 raw_apps=$(osascript -e 'tell application "System Events" to get name of (application processes whose background only is false)') || raw_apps=""
 IFS=',' read -ra APP_ARRAY <<< "$raw_apps"
 
@@ -150,9 +112,7 @@ for raw in "${APP_ARRAY[@]}"; do
   [ -z "$app" ] && continue
   skip=0
   for ex in "${EXCLUDE_PROGS[@]}"; do
-    if [ "$app" = "$ex" ]; then
-      skip=1; break
-    fi
+    [ "$app" = "$ex" ] && skip=1 && break
   done
   [ "$skip" -eq 1 ] && continue
   TO_QUIT+=("$app")
@@ -173,12 +133,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-# If immediate: skip graceful quit attempt and send SIGKILL right away
+# Immediate mode: SIGKILL all except Finder
 if [ "$IMMEDIATE" -eq 1 ]; then
-  echo "Immediate mode: sending SIGKILL (no graceful quit) to targeted apps..."
+  echo "Immediate mode: sending SIGKILL to targeted apps (excluding Finder)..."
   for app in "${TO_QUIT[@]}"; do
+    [ "$app" = "Finder" ] && continue
     echo "  SIGKILL -> $app"
-    # try to find PIDs and kill -9 them; fallback to killall -9 by name
     pids=$(pgrep -f "$app" || true)
     if [ -n "$pids" ]; then
       echo "$pids" | xargs -r kill -9 >/dev/null 2>&1 || true
@@ -186,11 +146,19 @@ if [ "$IMMEDIATE" -eq 1 ]; then
       killall -9 "$app" >/dev/null 2>&1 || true
     fi
   done
-  echo "Done (immediate SIGKILL)."
+
+  # Now quit Finder gracefully if present
+  for app in "${TO_QUIT[@]}"; do
+    [ "$app" = "Finder" ] || continue
+    echo "Requesting quit -> \"$app\"..."
+    osascript -e "tell application \"$app\" to quit" >/dev/null 2>&1 || true
+  done
+
+  echo "Done (immediate kill + Finder quit)."
   exit 0
 fi
 
-# Normal behavior: ask apps to quit politely, then optionally force remaining
+# Normal force mode: graceful quit then optional force
 for app in "${TO_QUIT[@]}"; do
   echo "Requesting quit -> \"$app\"..."
   osascript -e "tell application \"$app\" to quit" >/dev/null 2>&1 || true
@@ -202,9 +170,7 @@ sleep 0.8
 STILL_RUNNING=()
 for app in "${TO_QUIT[@]}"; do
   is_running=$(osascript -e "tell application \"System Events\" to (exists application process \"$app\")")
-  if [ "$is_running" = "true" ]; then
-    STILL_RUNNING+=("$app")
-  fi
+  [ "$is_running" = "true" ] && STILL_RUNNING+=("$app")
 done
 
 if [ ${#STILL_RUNNING[@]} -eq 0 ]; then
