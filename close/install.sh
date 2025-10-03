@@ -33,4 +33,8 @@ echo "    close"
 echo
 echo "Try: close -n   # dry-run (shows what would be closed)"
 echo "     close -f   # force kill stubborn apps"
+echo "     close -b   # do not kill browser" 
+echo "     close -h   # show help" 
+
+
 

@@ -1,36 +1,113 @@
 #!/usr/bin/env bash
 # close-all-apps.sh
 # Quit all visible GUI apps on macOS (including Finder).
-# Usage:
-#   close          # once installed in your shell (see instructions below)
-#   close -n       # dry-run (show apps but don’t quit)
-#   close -f       # force-kill stubborn apps
-#   close -nf      # dry-run + force (force skipped in dry-run)
+#   -n, --dry-run       : show what would be quit (no quitting)
+#   -f, --force         : force-kill apps that refuse to quit
+#   -b, --no-browser    : do NOT close browsers
+#   -h, --help          : show this help message
+#
+# Examples:
+#   close                 # quit apps
+#   close -n              # dry-run
+#   close --dry-run       # same as -n
+#   close -b              # don't close browsers
+#   close -f --no-browser # force-kill, but don't touch browsers
 
-set -u
+set -euo pipefail
+
 DRY_RUN=0
 FORCE=0
+NO_BROWSER=0
 
-# parse flags
-while getopts ":nf" opt; do
-  case ${opt} in
-    n ) DRY_RUN=1 ;;
-    f ) FORCE=1 ;;
-    \? ) echo "Usage: $0 [-n dry-run] [-f force]"; exit 2 ;;
+SCRIPT_NAME="$(basename "$0")"
+
+show_help() {
+  cat <<-EOF
+Usage: $SCRIPT_NAME [options]
+
+Options:
+  -n, --dry-run       Show which GUI apps would be quit, do not quit them.
+  -f, --force         After asking apps to quit, force-kill any that remain.
+  -b, --no-browser    Exclude common web browsers (Safari, Chrome, Firefox, etc.).
+  -h, --help          Show this help message and exit.
+
+Notes:
+  - The script excludes common terminal emulators by default so the shell running
+    this command remains usable (Terminal, iTerm2, Alacritty, kitty, WezTerm, etc.).
+  - Quitting Finder is included; macOS may relaunch Finder automatically.
+  - You may lose unsaved work in apps that are quit. Use --dry-run to preview.
+
+Examples:
+  $SCRIPT_NAME
+  $SCRIPT_NAME -n
+  $SCRIPT_NAME --dry-run --no-browser
+  $SCRIPT_NAME -f -b
+
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -f|--force)
+      FORCE=1
+      shift
+      ;;
+    -b|--no-browser)
+      NO_BROWSER=1
+      shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --) # end of options
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help
+      exit 2
+      ;;
+    *)
+      break
+      ;;
   esac
 done
 
-# ensure macOS
+# Ensure macOS
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "This script is for macOS (Darwin) only." >&2
   exit 1
 fi
 
 # apps to exclude so we don't kill the terminal running this script
-EXCLUDE_PROGS=("Terminal" "iTerm2" "iTerm" "Hyper" "Alacritty" "kitty" "WezTerm" "tmux" "Screen" "ssh")
+EXCLUDE_PROGS=("Terminal" "iTerm2" "iTerm" "Hyper" "Alacritty" "kitty" "WezTerm" "WezTerm.app" "tmux" "Screen" "ssh")
 
-# Get list of running GUI app names
-raw_apps=$(osascript -e 'tell application "System Events" to get name of (application processes whose background only is false)')
+# If requested, add common browsers to the exclusion list
+if [ "$NO_BROWSER" -eq 1 ]; then
+  BROWSERS_TO_EXCLUDE=(
+    "Safari"
+    "Safari Technology Preview"
+    "Google Chrome"
+    "Google Chrome Canary"
+    "Firefox"
+    "Brave Browser"
+    "Microsoft Edge"
+    "Chromium"
+    "Opera"
+    "Vivaldi"
+    "Tor Browser"
+  )
+  EXCLUDE_PROGS+=("${BROWSERS_TO_EXCLUDE[@]}")
+fi
+
+# Get list of running GUI app names (non-background processes)
+raw_apps=$(osascript -e 'tell application "System Events" to get name of (application processes whose background only is false)') || raw_apps=""
 IFS=',' read -ra APP_ARRAY <<< "$raw_apps"
 
 _trim() {
@@ -47,7 +124,8 @@ for raw in "${APP_ARRAY[@]}"; do
   skip=0
   for ex in "${EXCLUDE_PROGS[@]}"; do
     if [ "$app" = "$ex" ]; then
-      skip=1; break
+      skip=1
+      break
     fi
   done
   [ "$skip" -eq 1 ] && continue
@@ -66,13 +144,15 @@ done
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "--- Dry-run mode: no apps will be quit."
-  [ "$FORCE" -eq 1 ] && echo "Note: force flag given but not applied during dry-run."
+  [ "$FORCE" -eq 1 ] && echo "Note: --force given but not applied during dry-run."
   exit 0
 fi
 
 for app in "${TO_QUIT[@]}"; do
   echo "Quitting \"$app\"..."
+  # Request application to quit politely
   osascript -e "tell application \"$app\" to quit" >/dev/null 2>&1 || true
+  # slight delay to let app process the quit request
   sleep 0.4
 done
 
@@ -94,17 +174,23 @@ else
   if [ "$FORCE" -eq 1 ]; then
     echo "Force-killing..."
     for a in "${STILL_RUNNING[@]}"; do
+      # gentle first
       killall "$a" >/dev/null 2>&1 || true
       sleep 0.3
       still=$(osascript -e "tell application \"System Events\" to (exists application process \"$a\")")
       if [ "$still" = "true" ]; then
+        # escalate: find PIDs and SIGKILL them
         pids=$(pgrep -f "$a" || true)
-        [ -n "$pids" ] && echo "$pids" | xargs -r kill -9 >/dev/null 2>&1 || killall -9 "$a" >/dev/null 2>&1 || true
+        if [ -n "$pids" ]; then
+          echo "$pids" | xargs -r kill -9 >/dev/null 2>&1 || true
+        else
+          killall -9 "$a" >/dev/null 2>&1 || true
+        fi
       fi
     done
     echo "Force-kill finished."
   else
-    echo "Run again with -f to force-kill."
+    echo "Run again with --force (or -f) to attempt force-kill of remaining apps."
   fi
 fi
 
