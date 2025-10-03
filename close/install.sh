@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 SCRIPT_NAME="close"
@@ -32,9 +31,9 @@ echo "You can now run:"
 echo "    close"
 echo
 echo "Try: close -n   # dry-run (shows what would be closed)"
-echo "     close -f   # force kill stubborn apps"
-echo "     close -b   # do not kill browser" 
-echo "     close -h   # show help" 
-
-
+echo "     close -f   # force kill stubborn apps (ask then kill)"
+echo "     close -F   # immediate SIGKILL (no graceful shutdown)"
+echo "     close -b   # do not kill browsers"
+echo "     close -h   # show help"
+echo "     close -Fbn # immediate SIGKILL, no browser, dry run"
 
